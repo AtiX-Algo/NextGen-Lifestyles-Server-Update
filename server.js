@@ -29,7 +29,7 @@ const server = http.createServer(app);
 // Initialize Socket.io with CORS (Must match your Frontend URL)
 const io = new Server(server, {
   cors: {
-    origin: ['http://localhost:5173'], // Vite frontend
+    origin: ['https://nextgen-lifestyles-client-update.onrender.com/'], // Vite frontend
     methods: ["GET", "POST"],
     credentials: true
   }
@@ -44,7 +44,7 @@ const SUPPORT_ROOM = "live_support";
 // ================= Middleware =================
 app.use(express.json());
 app.use(cors({
-    origin: ['http://localhost:5173'], // Vite frontend
+    origin: ['https://nextgen-lifestyles-client-update.onrender.com/'], // Vite frontend
     credentials: true
 }));
 
