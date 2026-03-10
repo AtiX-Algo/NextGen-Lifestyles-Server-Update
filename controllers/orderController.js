@@ -1,37 +1,56 @@
 // server/controllers/orderController.js
 const Order = require('../models/Order');
+const OrderItem = require('../models/OrderItem'); 
 const Product = require('../models/Product');
-const Stripe = require('stripe');
-const stripe = Stripe('sk_test_YOUR_STRIPE_KEY_HERE'); 
-const sendSMS = require('../utils/smsService'); 
 
-// 1. Create New Order
+// 1. Create New Order (Saves to Order AND OrderItem collections)
 exports.addOrderItems = async (req, res) => {
   try {
-    const { orderItems, shippingAddress, paymentMethod, itemsPrice, taxPrice, shippingPrice, totalPrice } = req.body;
+    const { 
+      orderItems, 
+      shippingAddress, 
+      paymentMethod, 
+      itemsPrice, 
+      shippingPrice, 
+      taxPrice, 
+      discountAmount, 
+      totalPrice 
+    } = req.body;
 
     if (!orderItems || orderItems.length === 0) {
       return res.status(400).json({ message: 'No order items' });
     }
 
+    // 1. Create the base Order
     const order = new Order({
-      user: req.user._id, 
-      orderItems,
-      shippingAddress,
-      paymentMethod,
-      itemsPrice,
-      taxPrice,
-      shippingPrice,
-      totalPrice
+      userId: req.user._id,
+      customerName: req.user.name,
+      phone: shippingAddress.phone,
+      address: shippingAddress.address,
+      city: shippingAddress.city,
+      location: shippingAddress.location, // Saves Map Coordinates!
+      itemsPrice,                         // Saves subtotal
+      shippingPrice,                      // Saves shipping
+      taxPrice,                           // Saves tax
+      discountAmount,                     // Saves voucher/coupon
+      totalAmount: totalPrice,
+      orderStatus: 'Pending'
     });
 
     const createdOrder = await order.save();
 
-    // 📲 SMS NOTIFICATION: Order Placed
-    if (shippingAddress.phone) {
-        const msg = `Hi ${req.user.name}, your order #${createdOrder._id.toString().slice(-6)} has been placed successfully! Total: $${totalPrice}`;
-        sendSMS(shippingAddress.phone, msg);
-    }
+    // 2. Create the Order Items linked to this Order ID
+    const orderItemDocs = orderItems.map(item => ({
+        orderId: createdOrder._id,
+        productId: item.product,
+        productName: item.name,
+        quantity: item.quantity,
+        price: item.price,
+        image: item.image,
+        size: item.size // Make sure size saves to OrderItem
+    }));
+
+    await OrderItem.insertMany(orderItemDocs);
 
     res.status(201).json(createdOrder);
   } catch (error) {
@@ -43,9 +62,11 @@ exports.addOrderItems = async (req, res) => {
 // 2. Get Order by ID
 exports.getOrderById = async (req, res) => {
   try {
-    const order = await Order.findById(req.params.id).populate('user', 'name email');
+    const order = await Order.findById(req.params.id).populate('userId', 'name email');
+    const orderItems = await OrderItem.find({ orderId: req.params.id });
+    
     if (order) {
-      res.json(order);
+      res.json({ ...order.toObject(), orderItems });
     } else {
       res.status(404).json({ message: 'Order not found' });
     }
@@ -54,133 +75,35 @@ exports.getOrderById = async (req, res) => {
   }
 };
 
-// 3. Update Order to Paid
-exports.updateOrderToPaid = async (req, res) => {
-  try {
-    const order = await Order.findById(req.params.id);
-
-    if (order) {
-      order.isPaid = true;
-      order.paidAt = Date.now();
-
-      order.paymentResult = {
-        id: req.body.id || 'mock_payment_id',
-        status: req.body.status || 'success',
-        email_address: req.body.email_address || req.user.email
-      };
-
-      const updatedOrder = await order.save();
-      res.json(updatedOrder);
-    } else {
-      res.status(404).json({ message: 'Order not found' });
-    }
-  } catch (error) {
-    res.status(500).json({ message: 'Server Error' });
-  }
-};
-
-// 4. Get My Orders
+// 3. Get My Orders (For Customer Dashboard)
 exports.getMyOrders = async (req, res) => {
   try {
-    const orders = await Order.find({ user: req.user._id });
+    const orders = await Order.find({ userId: req.user._id }).sort({ createdAt: -1 });
     res.json(orders);
   } catch (error) {
     res.status(500).json({ message: 'Server Error' });
   }
 };
 
-// 5. Get ALL Orders (Admin)
+// 4. Get ALL Orders (For Admin Dashboard)
 exports.getOrders = async (req, res) => {
   try {
-    const orders = await Order.find({}).populate('user', 'id name');
+    const orders = await Order.find({}).sort({ createdAt: -1 });
     res.json(orders);
   } catch (error) {
     res.status(500).json({ message: 'Server Error' });
   }
 };
 
-// 6. Update Order to Delivered (Admin Manual)
-exports.updateOrderToDelivered = async (req, res) => {
-  try {
-    const order = await Order.findById(req.params.id);
-    if (order) {
-      order.isDelivered = true;
-      order.deliveredAt = Date.now();
-      order.status = 'Delivered';
-      const updatedOrder = await order.save();
-      res.json(updatedOrder);
-    } else {
-      res.status(404).json({ message: 'Order not found' });
-    }
-  } catch (error) {
-    res.status(500).json({ message: 'Server Error' });
-  }
-};
-
-// 7. Assign Delivery Man (Admin)
-exports.assignDeliveryMan = async (req, res) => {
-  try {
-    const { deliveryManId } = req.body;
-    const order = await Order.findById(req.params.id);
-
-    if (order) {
-      order.deliveryMan = deliveryManId;
-      order.status = 'Shipped'; 
-      await order.save();
-
-      // 📲 SMS NOTIFICATION: Order Shipped
-      if (order.shippingAddress && order.shippingAddress.phone) {
-          const msg = `Good news! Order #${order._id.toString().slice(-6)} has been SHIPPED. A delivery partner has been assigned.`;
-          sendSMS(order.shippingAddress.phone, msg);
-      }
-
-      res.json(order);
-    } else {
-      res.status(404).json({ message: 'Order not found' });
-    }
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: 'Server Error' });
-  }
-};
-
-// 8. Get Orders for Logged-in Delivery Man
-exports.getDeliveryManOrders = async (req, res) => {
-  try {
-    const orders = await Order.find({ deliveryMan: req.user._id }).populate('user', 'name phone');
-    res.json(orders);
-  } catch (error) {
-    res.status(500).json({ message: 'Server Error' });
-  }
-};
-
-// 9. Update Status (Delivery Man Only)
+// 5. Update Status (Admin Manual Verification Flow)
 exports.updateOrderStatus = async (req, res) => {
   try {
     const { status } = req.body; 
     const order = await Order.findById(req.params.id);
 
     if (order) {
-      order.status = status;
-      if (status === 'Delivered') {
-        order.isDelivered = true;
-        order.deliveredAt = Date.now();
-      }
-      
+      order.orderStatus = status;
       const updatedOrder = await order.save();
-
-      // 📲 SMS NOTIFICATION: Status Update
-      if (order.shippingAddress && order.shippingAddress.phone) {
-          let msg = '';
-          if (status === 'Out_for_Delivery') {
-              msg = `Order #${order._id.toString().slice(-6)} is OUT FOR DELIVERY.`;
-          } else if (status === 'Delivered') {
-              msg = `Order #${order._id.toString().slice(-6)} has been DELIVERED.`;
-          }
-
-          if (msg) sendSMS(order.shippingAddress.phone, msg);
-      }
-
       res.json(updatedOrder);
     } else {
       res.status(404).json({ message: 'Order not found' });
@@ -190,15 +113,15 @@ exports.updateOrderStatus = async (req, res) => {
   }
 };
 
-// 10. Get Admin Analytics
+// 6. Get Admin Analytics
 exports.getAdminAnalytics = async (req, res) => {
   try {
     const monthlySales = await Order.aggregate([
-      { $match: { isPaid: true } },
+      { $match: { orderStatus: { $in: ['Confirmed', 'Delivered'] } } },
       {
         $group: {
           _id: { $month: "$createdAt" },
-          totalSales: { $sum: "$totalPrice" },
+          totalSales: { $sum: "$totalAmount" },
           count: { $sum: 1 }
         }
       },
@@ -222,23 +145,22 @@ exports.getAdminAnalytics = async (req, res) => {
     }));
 
     res.json({ salesData: formattedSales, categoryData: formattedCategories });
-
   } catch (error) {
     res.status(500).json({ message: "Server Error" });
   }
 };
 
-// 11. Request Order Return (User)
+// 7. Request Order Return (User)
 exports.requestOrderReturn = async (req, res) => {
   try {
     const { reason } = req.body;
     const order = await Order.findById(req.params.id);
     if (order) {
-      if (order.status !== 'Delivered') {
+      if (order.orderStatus !== 'Delivered') {
         return res.status(400).json({ message: 'Only delivered orders can be returned' });
       }
       
-      order.status = 'Return_Requested';
+      order.orderStatus = 'Return_Requested';
       order.returnReason = reason;
       order.returnStatus = 'Pending';
       
@@ -252,19 +174,20 @@ exports.requestOrderReturn = async (req, res) => {
   }
 };
 
-// 12. Handle Return Request (Admin)
+// 8. Handle Return Request (Admin)
 exports.handleReturnRequest = async (req, res) => {
   try {
-    const { status } = req.body; // 'Returned' or 'Return_Rejected'
+    const { status } = req.body; 
     const order = await Order.findById(req.params.id);
+    
     if (order) {
-      order.status = status;
+      order.orderStatus = status;
       order.returnStatus = status === 'Returned' ? 'Approved' : 'Rejected';
       
-      // ✅ If approved, add stock back to products
       if (status === 'Returned') {
-        for (const item of order.orderItems) {
-            const product = await Product.findById(item.product);
+        const orderItems = await OrderItem.find({ orderId: order._id });
+        for (const item of orderItems) {
+            const product = await Product.findById(item.productId);
             if (product) {
                 product.stock += item.quantity;
                 await product.save();
@@ -280,4 +203,29 @@ exports.handleReturnRequest = async (req, res) => {
   } catch (error) {
     res.status(500).json({ message: 'Server Error' });
   }
+};
+
+// 👈 9. NEW: Update Shipping Charge (Admin)
+exports.updateOrderShipping = async (req, res) => {
+    try {
+        const order = await Order.findById(req.params.id);
+        if (order) {
+            const newShipping = Number(req.body.shippingPrice) || 0;
+            
+            // Re-calculate the grand total so the math is always perfect
+            const itemsPrice = order.itemsPrice || 0;
+            const taxPrice = order.taxPrice || 0;
+            const discount = order.discountAmount || 0;
+            
+            order.shippingPrice = newShipping;
+            order.totalAmount = itemsPrice + taxPrice + newShipping - discount;
+
+            const updatedOrder = await order.save();
+            res.json(updatedOrder);
+        } else {
+            res.status(404).json({ message: "Order not found" });
+        }
+    } catch (error) {
+        res.status(500).json({ message: "Server Error", error: error.message });
+    }
 };

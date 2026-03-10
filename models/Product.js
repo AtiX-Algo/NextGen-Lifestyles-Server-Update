@@ -26,7 +26,10 @@ const productSchema = new mongoose.Schema({
   name: { type: String, required: true },
   description: { type: String, required: true },
   price: { type: Number, required: true, default: 0 },
-  category: { type: String, required: true },
+  category: { 
+    type: String, 
+    required: [true, 'Category is required'],
+    enum: ['Panjabi', 'Pant']},
   brand: { type: String, required: true },
   stock: { type: Number, required: true, default: 0 },
   images: [{ type: String }], // array of image URLs
